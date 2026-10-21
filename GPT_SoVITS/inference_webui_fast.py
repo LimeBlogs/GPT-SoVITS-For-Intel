@@ -13,7 +13,7 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from tools import device_utils as du  # noqa: E402
+from tools import device_utils as du, dtype_utils as dt  # noqa: E402
 from tools.portable_runtime import activate as activate_portable_runtime
 
 activate_portable_runtime(change_cwd=True)
@@ -59,9 +59,9 @@ infer_ttswebui = int(infer_ttswebui)
 is_share = os.environ.get("is_share", "False")
 is_share = eval(is_share)
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
-    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
+    du.set_visible_devices(os.environ["_CUDA_VISIBLE_DEVICES"])
 
-is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
+is_half = eval(os.environ.get("is_half", "True")) and du.supports_fp16_fast(du.default_device())
 gpt_path = os.environ.get("gpt_path", None)
 sovits_path = os.environ.get("sovits_path", None)
 cnhubert_base_path = os.environ.get("cnhubert_base_path", None)
@@ -84,14 +84,9 @@ i18n = I18nAuto(language=language)
 
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # 确保直接启动推理UI时也能够设置。
 
-if torch.cuda.is_available():
-    device = "cuda"
-# elif torch.backends.mps.is_available():
-#     device = "mps"
-else:
-    device = "cpu"
+device = str(du.default_device())
 
-accel_dtype = torch.float16 if is_half else torch.float32
+accel_dtype = dt.resolve(is_half, device)
 graph_available = cuda_graph_available(device)
 flash_attn_supported = flash_attention_available(device, accel_dtype)
 

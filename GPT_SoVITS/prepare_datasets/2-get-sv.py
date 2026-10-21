@@ -22,7 +22,7 @@ opt_dir = os.environ.get("opt_dir")
 sv_path = os.environ.get("sv_path")
 import torch
 
-is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
+is_half = eval(os.environ.get("is_half", "True")) and du.supports_fp16_fast(du.default_device())
 
 import traceback
 import torchaudio
@@ -54,12 +54,7 @@ os.makedirs(wav32dir, exist_ok=True)
 
 maxx = 0.95
 alpha = 0.5
-if torch.cuda.is_available():
-    device = "cuda:0"
-# elif torch.backends.mps.is_available():
-#     device = "mps"
-else:
-    device = "cpu"
+device = str(du.default_device())
 
 
 class SV:

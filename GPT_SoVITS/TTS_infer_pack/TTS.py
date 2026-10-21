@@ -18,6 +18,7 @@ from typing import List, Tuple, Union
 import ffmpeg
 from tools.acceleration import create_acceleration
 from tools.portable_runtime import FFMPEG_EXE, prepare_transformers_flash_attention
+from tools import device_utils as du, dtype_utils as dt
 
 prepare_transformers_flash_attention()
 
@@ -278,12 +279,8 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     try:
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
-            torch.cuda.manual_seed_all(seed)
-            # torch.backends.cudnn.deterministic = True
-            # torch.backends.cudnn.benchmark = False
-            # torch.backends.cudnn.enabled = True
+        du.manual_seed_all(seed)
+        if torch.device(du.default_device()).type == "cuda":
             # 开启后会影响精度
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
@@ -403,14 +400,15 @@ class TTS_Config:
         self.configs: dict = configs_.get("custom", configs_["v2"])
         self.default_configs = deepcopy(configs_)
 
-        self.device = self.configs.get("device", torch.device("cpu"))
-        if "cuda" in str(self.device) and not torch.cuda.is_available():
-            print("Warning: CUDA is not available, set device to CPU.")
-            self.device = torch.device("cpu")
+        dev = torch.device(str(self.configs.get("device", torch.device("cpu"))))
+        if not du.accel_available(dev):
+            print(f"Warning: {dev.type} is not available, set device to CPU.")
+            dev = torch.device("cpu")
+        self.device = dev
 
         self.is_half = self.configs.get("is_half", False)
-        if str(self.device) == "cpu" and self.is_half:
-            print(f"Warning: Half precision is not supported on CPU, set is_half to False.")
+        if not du.supports_fp16_fast(self.device) and self.is_half:
+            print(f"Warning: Fast half precision is not supported on {self.device.type}, set is_half to False.")
             self.is_half = False
 
         version = self.configs.get("version", None)
@@ -1764,10 +1762,7 @@ class TTS:
     def empty_cache(self):
         try:
             gc.collect()  # 触发gc的垃圾回收。避免内存一直增长。
-            if "cuda" in str(self.configs.device):
-                torch.cuda.empty_cache()
-            elif str(self.configs.device) == "mps":
-                torch.mps.empty_cache()
+            du.empty_cache(self.configs.device)
         except:
             pass
 

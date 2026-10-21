@@ -6,6 +6,7 @@ from queue import Empty
 
 import torch
 
+from tools import device_utils as du
 from tools.acceleration import resolve_acceleration
 from .PyTorch.AR.structs import T2SRequest
 from .PyTorch.AR.t2s_engine import T2SEngine
@@ -23,7 +24,7 @@ class AccelInference:
         max_seq_length=None,
     ):
         self.max_seq_length = max_seq_length
-        self.device = torch.device(device if device is not None else "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device if device is not None else du.default_device())
         self.dtype = dtype
         self.max_batch_size = max_batch_size
         self.weights_path = weights_path
@@ -199,7 +200,9 @@ class AccelInference:
                         yield cumulative, False
                     continue
                 if response.ready_event is not None:
-                    response.ready_event.wait(torch.cuda.current_stream(self.device))
+                    stream = du.current_stream(self.device)
+                    if stream is not None:
+                        response.ready_event.wait(stream)
                 if response.exception is not None:
                     raise response.exception
                 if response.finished:

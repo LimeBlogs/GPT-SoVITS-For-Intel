@@ -21,7 +21,7 @@ opt_dir = os.environ.get("opt_dir")
 bert_pretrained_dir = os.environ.get("bert_pretrained_dir")
 import torch
 
-is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
+is_half = eval(os.environ.get("is_half", "True")) and du.supports_fp16_fast(du.default_device())
 version = os.environ.get("version", None)
 import traceback
 import os.path
@@ -56,12 +56,7 @@ if os.path.exists(txt_path) == False:
     bert_dir = "%s/3-bert" % (opt_dir)
     os.makedirs(opt_dir, exist_ok=True)
     os.makedirs(bert_dir, exist_ok=True)
-    if torch.cuda.is_available():
-        device = "cuda:0"
-    # elif torch.backends.mps.is_available():
-    #     device = "mps"
-    else:
-        device = "cpu"
+    device = str(du.default_device())
     if os.path.exists(bert_pretrained_dir):
         ...
     else:

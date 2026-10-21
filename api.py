@@ -171,6 +171,7 @@ from text import cleaned_text_to_sequence
 from text.cleaner import clean_text
 from module.mel_processing import spectrogram_torch
 import config as global_config
+from tools import device_utils as du, dtype_utils as dt
 import logging
 import subprocess
 
@@ -209,7 +210,7 @@ def clean_hifigan_model():
         hifigan_model = hifigan_model.cpu()
         hifigan_model = None
         try:
-            torch.cuda.empty_cache()
+            du.empty_cache(device)
         except:
             pass
     hifigan_version = None
@@ -221,7 +222,7 @@ def clean_bigvgan_model():
         bigvgan_model = bigvgan_model.cpu()
         bigvgan_model = None
         try:
-            torch.cuda.empty_cache()
+            du.empty_cache(device)
         except:
             pass
 
@@ -232,7 +233,7 @@ def clean_sv_cn_model():
         sv_cn_model.embedding_model = sv_cn_model.embedding_model.cpu()
         sv_cn_model = None
         try:
-            torch.cuda.empty_cache()
+            du.empty_cache(device)
         except:
             pass
 

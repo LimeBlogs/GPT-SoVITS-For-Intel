@@ -11,6 +11,7 @@ from queue import Empty, SimpleQueue
 from typing import Literal, Optional, Union
 
 import torch
+from tools import device_utils as du
 from rich.progress import BarColumn, Progress, TextColumn
 
 from ...logger import SpeedColumnToken, Timer, console, logger
@@ -41,16 +42,7 @@ empty_result = T2SResult(
 
 
 def synchronize_device(device: torch.device) -> None:
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    elif device.type == "mps":
-        torch.mps.synchronize()
-    elif device.type == "xpu":
-        torch.xpu.synchronize()
-    elif device.type == "mtia":
-        torch.mtia.synchronize()
-    elif device.type == "cpu":
-        pass
+    du.synchronize(device)
 
 
 class T2SEngine(T2SEngineProtocol):
@@ -175,9 +167,11 @@ class T2SEngine(T2SEngineProtocol):
             result=result,
             exception=exception,
         )
-        if tokens is not None and self.device.type == "cuda":
-            payload.ready_event = torch.cuda.Event()
-            payload.ready_event.record(torch.cuda.current_stream(self.device))
+        if tokens is not None and self.device.type in ("cuda", "xpu"):
+            payload.ready_event = du.new_event(self.device)
+            stream = du.current_stream(self.device)
+            if stream is not None and payload.ready_event is not None:
+                payload.ready_event.record(stream)
         if finished:
             handle.done = True
             self.handles.pop(session.request_id, None)

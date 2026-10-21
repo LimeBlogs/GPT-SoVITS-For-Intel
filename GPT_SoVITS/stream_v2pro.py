@@ -4,6 +4,7 @@ from export_torch_script import ExportERes2NetV2, SSLModel, T2SModel, VitsModel,
 import export_torch_script
 from my_utils import load_audio
 import torch
+from tools import device_utils as du
 from torch import LongTensor, Tensor, nn
 from torch.nn import functional as F
 
@@ -586,7 +587,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_path", required=True, help="Path to the output directory"
     )
-    parser.add_argument("--device", help="Device to use", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", help="Device to use", default=str(du.default_device()))
     parser.add_argument("--version", help="version of the model", default="v2Pro")
     parser.add_argument("--no-half", action="store_true", help = "Do not use half precision for model weights")
     parser.add_argument("--lang", default="auto", help="Language for text processing (default: auto)")

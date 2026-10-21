@@ -10,6 +10,8 @@ import typing as tp
 
 import torch
 
+from tools import device_utils as du
+
 
 def rank():
     if torch.distributed.is_initialized():
@@ -115,7 +117,7 @@ def average_metrics(metrics: tp.Dict[str, float], count=1.0):
     if not is_distributed():
         return metrics
     keys, values = zip(*metrics.items())
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = str(du.default_device())
     tensor = torch.tensor(list(values) + [1], device=device, dtype=torch.float32)
     tensor *= count
     all_reduce(tensor)

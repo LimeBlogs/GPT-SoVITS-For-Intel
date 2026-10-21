@@ -10,6 +10,8 @@ from tools.portable_runtime import activate as activate_portable_runtime
 
 activate_portable_runtime(change_cwd=True)
 
+from tools import device_utils as du, dtype_utils as dt
+
 import psutil
 import os
 
@@ -85,8 +87,8 @@ infer_ttswebui = int(infer_ttswebui)
 is_share = os.environ.get("is_share", "False")
 is_share = eval(is_share)
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
-    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
-is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
+    du.set_visible_devices(os.environ["_CUDA_VISIBLE_DEVICES"])
+is_half = eval(os.environ.get("is_half", "True")) and du.supports_fp16_fast(du.default_device())
 # is_half=False
 punctuation = set(["!", "?", "…", ",", ".", "-", " "])
 import gradio as gr
@@ -112,7 +114,7 @@ def set_seed(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+    du.manual_seed_all(seed)
 
 
 # set_seed(42)
@@ -133,12 +135,9 @@ i18n = I18nAuto(language=language)
 
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # 确保直接启动推理UI时也能够设置。
 
-if torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
+device = str(du.default_device())
 
-accel_dtype = torch.float16 if is_half else torch.float32
+accel_dtype = dt.resolve(is_half, device)
 graph_available = cuda_graph_available(device)
 flash_attn_supported = flash_attention_available(device, accel_dtype)
 
@@ -429,7 +428,7 @@ def clean_hifigan_model():
         hifigan_model = hifigan_model.cpu()
         hifigan_model = None
         try:
-            torch.cuda.empty_cache()
+            du.empty_cache(device)
         except:
             pass
 
@@ -440,7 +439,7 @@ def clean_bigvgan_model():
         bigvgan_model = bigvgan_model.cpu()
         bigvgan_model = None
         try:
-            torch.cuda.empty_cache()
+            du.empty_cache(device)
         except:
             pass
 
@@ -451,7 +450,7 @@ def clean_sv_cn_model():
         sv_cn_model.embedding_model = sv_cn_model.embedding_model.cpu()
         sv_cn_model = None
         try:
-            torch.cuda.empty_cache()
+            du.empty_cache(device)
         except:
             pass
 

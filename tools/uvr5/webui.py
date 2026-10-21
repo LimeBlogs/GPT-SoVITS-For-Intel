@@ -14,6 +14,7 @@ import sys
 
 import ffmpeg
 import torch
+from tools import device_utils as du
 from bsroformer import Roformer_Loader
 from mdxnet import MDXNetDereverb
 from vr import AudioPre, AudioPreDeEcho
@@ -120,8 +121,7 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
         except:
             traceback.print_exc()
         print("clean_empty_cache")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        du.empty_cache(sys.argv[1] if len(sys.argv) > 1 else None)
     yield "\n".join(infos)
 
 
