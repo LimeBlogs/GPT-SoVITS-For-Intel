@@ -762,10 +762,8 @@ class TTS:
 
         self.vocoder = self.vocoder.eval()
         self._vocoder_version = version
-        if self.configs.is_half == True:
-            self.vocoder = self.vocoder.half().to(self.configs.device)
-        else:
-            self.vocoder = self.vocoder.to(self.configs.device)
+        model_dtype = dt.resolve(self.configs.is_half, self.configs.device)
+        self.vocoder = dt.apply(self.vocoder.to(self.configs.device), model_dtype)
 
     def init_sr_model(self):
         if self.sr_model is not None:

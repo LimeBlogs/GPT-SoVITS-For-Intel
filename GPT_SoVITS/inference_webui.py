@@ -468,10 +468,8 @@ def init_bigvgan():
     bigvgan_model = bigvgan_model.eval()
     clean_hifigan_model()
     clean_sv_cn_model()
-    if is_half == True:
-        bigvgan_model = bigvgan_model.half().to(device)
-    else:
-        bigvgan_model = bigvgan_model.to(device)
+    model_dtype = dt.resolve(is_half, device)
+    bigvgan_model = dt.apply(bigvgan_model.to(device), model_dtype)
 
 
 def init_hifigan():
@@ -500,10 +498,8 @@ def init_hifigan():
     hifigan_version = model_version
     clean_bigvgan_model()
     clean_sv_cn_model()
-    if is_half == True:
-        hifigan_model = hifigan_model.half().to(device)
-    else:
-        hifigan_model = hifigan_model.to(device)
+    model_dtype = dt.resolve(is_half, device)
+    hifigan_model = dt.apply(hifigan_model.to(device), model_dtype)
 
 
 from sv import SV

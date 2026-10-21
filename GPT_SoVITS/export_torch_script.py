@@ -5,6 +5,7 @@ from io import BytesIO
 from typing import Optional
 from my_utils import load_audio
 import torch
+from tools import device_utils as du, dtype_utils as dt
 import torchaudio
 
 from torch import IntTensor, LongTensor, Tensor, nn
@@ -361,12 +362,12 @@ class VitsModel(nn.Module):
         )
         self.vq_model.load_state_dict(dict_s2["weight"], strict=False)
         self.vq_model.dec.remove_weight_norm()
-        if is_half:
-            self.vq_model = self.vq_model.half()
+        dtype = dt.resolve(is_half, device)
+        self.vq_model = dt.apply(self.vq_model, dtype)
         self.vq_model = self.vq_model.to(device)
         self.vq_model.eval()
         self.hann_window = torch.hann_window(
-            self.hps.data.win_length, device=device, dtype=torch.float16 if is_half else torch.float32
+            self.hps.data.win_length, device=device, dtype=dtype
         )
 
     def forward(self, text_seq, pred_semantic, ref_audio, speed=1.0, sv_emb=None):

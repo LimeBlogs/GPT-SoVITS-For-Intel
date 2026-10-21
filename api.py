@@ -250,10 +250,8 @@ def init_bigvgan():
     bigvgan_model.remove_weight_norm()
     bigvgan_model = bigvgan_model.eval()
 
-    if is_half == True:
-        bigvgan_model = bigvgan_model.half().to(device)
-    else:
-        bigvgan_model = bigvgan_model.to(device)
+    model_dtype = dt.resolve(is_half, device)
+    bigvgan_model = dt.apply(bigvgan_model.to(device), model_dtype)
 
 
 def init_hifigan(version="v4"):
@@ -281,10 +279,8 @@ def init_hifigan(version="v4"):
         weights_only=False,
     )
     print("loading vocoder", hifigan_model.load_state_dict(state_dict_g))
-    if is_half == True:
-        hifigan_model = hifigan_model.half().to(device)
-    else:
-        hifigan_model = hifigan_model.to(device)
+    model_dtype = dt.resolve(is_half, device)
+    hifigan_model = dt.apply(hifigan_model.to(device), model_dtype)
     hifigan_version = vocoder_version
 
 
@@ -441,10 +437,8 @@ def get_sovits_weights(sovits_path):
             del vq_model.enc_q
         except:
             pass
-    if is_half == True:
-        vq_model = vq_model.half().to(device)
-    else:
-        vq_model = vq_model.to(device)
+    model_dtype = dt.resolve(is_half, device)
+    vq_model = dt.apply(vq_model.to(device), model_dtype)
     vq_model.eval()
     if if_lora_v3 == False:
         vq_model.load_state_dict(dict_s2["weight"], strict=False)
@@ -483,9 +477,8 @@ def get_gpt_weights(gpt_path):
     max_sec = config["data"]["max_sec"]
     t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
     t2s_model.load_state_dict(dict_s1["weight"])
-    if is_half == True:
-        t2s_model = t2s_model.half()
-    t2s_model = t2s_model.to(device)
+    model_dtype = dt.resolve(is_half, device)
+    t2s_model = dt.apply(t2s_model, model_dtype).to(device)
     t2s_model.eval()
     # total = sum([param.nelement() for param in t2s_model.parameters()])
     # logger.info("Number of parameter: %.2fM" % (total / 1e6))
@@ -536,7 +529,7 @@ def get_bert_inf(phones, word2ph, norm_text, language):
     else:
         bert = torch.zeros(
             (1024, len(phones)),
-            dtype=torch.float16 if is_half == True else torch.float32,
+            dtype=dt.resolve(is_half, device),
         ).to(device)
 
     return bert
@@ -609,7 +602,7 @@ def get_phones_and_bert(text, language, version, final=False):
     if not final and len(phones) < 6:
         return get_phones_and_bert("." + text, language, version, final=True)
 
-    return phones, bert.to(torch.float16 if is_half == True else torch.float32), norm_text
+    return phones, bert.to(dt.resolve(is_half, device)), norm_text
 
 
 class DictToAttrRecursive(dict):
