@@ -20,8 +20,12 @@ from module.quantize import ResidualVectorQuantizer
 # from text import symbols
 from text import symbols as symbols_v1
 from text import symbols2 as symbols_v2
-from torch.cuda.amp import autocast
 import contextlib
+from tools import device_utils as du
+from tools.amp_utils import autocast_ctx
+
+def autocast(enabled=True):
+    return autocast_ctx(du.default_device(), enabled)
 import random
 
 

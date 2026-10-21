@@ -34,17 +34,11 @@ def _slice_tensors(obj: T, bsz: int) -> T:
     return obj
 
 
+from tools import device_utils as du
+
+
 def _synchronize_device(device: torch.device) -> None:
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    elif device.type == "mps":
-        torch.mps.synchronize()
-    elif device.type == "xpu":
-        torch.xpu.synchronize()
-    elif device.type == "mtia":
-        torch.mtia.synchronize()
-    elif device.type == "cpu":
-        pass
+    du.synchronize(device)
 
 
 class ModelRunner:
