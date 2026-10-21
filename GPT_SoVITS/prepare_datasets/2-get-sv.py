@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
-
 import sys
+import pathlib
+
+_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tools import device_utils as du  # noqa: E402
+
 import os
 
 inp_text = os.environ.get("inp_text")

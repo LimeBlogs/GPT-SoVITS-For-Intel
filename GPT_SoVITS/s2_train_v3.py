@@ -1,3 +1,12 @@
+import sys
+import pathlib
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tools import device_utils as du  # noqa: E402
+
 import warnings
 
 warnings.filterwarnings("ignore")

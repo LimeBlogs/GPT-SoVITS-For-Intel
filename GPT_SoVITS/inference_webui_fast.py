@@ -6,6 +6,14 @@
 全部按英文识别
 全部按日文识别
 """
+import sys
+import pathlib
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tools import device_utils as du  # noqa: E402
 from tools.portable_runtime import activate as activate_portable_runtime
 
 activate_portable_runtime(change_cwd=True)

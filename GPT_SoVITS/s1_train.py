@@ -1,4 +1,13 @@
 # modified from https://github.com/feng-yufei/shared_debugging_code/blob/main/train_t2s.py
+import sys
+import pathlib
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tools import device_utils as du  # noqa: E402
+
 import os
 
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
