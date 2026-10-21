@@ -15,6 +15,7 @@ import signal
 import psutil
 import torch
 import yaml
+from tools import device_utils as du
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
 torch.manual_seed(233333)
@@ -159,6 +160,15 @@ def fix_gpu_numbers(inputs):
         return ",".join(output)
     except:
         return inputs
+
+
+def make_visible_env_dict(gpu_number: str) -> dict:
+    gpu_id = str(fix_gpu_number(gpu_number))
+    env_name = du.visible_env_name()
+    d = {"_CUDA_VISIBLE_DEVICES": gpu_id, env_name: gpu_id}
+    if env_name == "ZE_AFFINITY_MASK":
+        d["ONEAPI_DEVICE_SELECTOR"] = f"level_zero:{gpu_id}"
+    return d
 
 
 from config import pretrained_gpt_name, pretrained_sovits_name
@@ -343,7 +353,7 @@ def change_tts_inference(bert_path, cnhubert_base_path, gpu_number, gpt_path, so
         os.environ["sovits_path"] = sovits_path
         os.environ["cnhubert_base_path"] = cnhubert_base_path
         os.environ["bert_path"] = bert_path
-        os.environ["_CUDA_VISIBLE_DEVICES"] = str(fix_gpu_number(gpu_number))
+        du.set_visible_devices(str(fix_gpu_number(gpu_number)))
         os.environ["is_half"] = str(is_half)
         os.environ["infer_ttswebui"] = str(webui_port_infer_tts)
         os.environ["is_share"] = str(is_share)
@@ -628,7 +638,7 @@ def open1Bb(
         data["output_dir"] = "%s/logs_s1_%s" % (s1_dir, version)
         # data["version"]=version
 
-        os.environ["_CUDA_VISIBLE_DEVICES"] = str(fix_gpu_numbers(gpu_numbers.replace("-", ",")))
+        du.set_visible_devices(str(fix_gpu_numbers(gpu_numbers.replace("-", ","))))
         os.environ["hz"] = "25hz"
         tmp_config_path = "%s/tmp_s1.yaml" % tmp
         with open(tmp_config_path, "w") as f:
@@ -801,8 +811,8 @@ def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
                 {
                     "i_part": str(i_part),
                     "all_parts": str(all_parts),
-                    "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
                     "is_half": str(is_half),
+                    **make_visible_env_dict(gpu_names[i_part]),
                 }
             )
             os.environ.update(config)
@@ -892,7 +902,7 @@ def open1b(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, ssl_pretrained
                 {
                     "i_part": str(i_part),
                     "all_parts": str(all_parts),
-                    "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
+                    **make_visible_env_dict(gpu_names[i_part]),
                 }
             )
             os.environ.update(config)
@@ -914,7 +924,7 @@ def open1b(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, ssl_pretrained
                     {
                         "i_part": str(i_part),
                         "all_parts": str(all_parts),
-                        "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
+                        **make_visible_env_dict(gpu_names[i_part]),
                     }
                 )
                 os.environ.update(config)
@@ -986,7 +996,7 @@ def open1c(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, pretrained_s2G
                 {
                     "i_part": str(i_part),
                     "all_parts": str(all_parts),
-                    "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
+                    **make_visible_env_dict(gpu_names[i_part]),
                 }
             )
             os.environ.update(config)
@@ -1086,7 +1096,7 @@ def open1abc(
                         {
                             "i_part": str(i_part),
                             "all_parts": str(all_parts),
-                            "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
+                            **make_visible_env_dict(gpu_names[i_part]),
                         }
                     )
                     os.environ.update(config)
@@ -1133,7 +1143,7 @@ def open1abc(
                     {
                         "i_part": str(i_part),
                         "all_parts": str(all_parts),
-                        "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
+                        **make_visible_env_dict(gpu_names[i_part]),
                     }
                 )
                 os.environ.update(config)
@@ -1155,7 +1165,7 @@ def open1abc(
                         {
                             "i_part": str(i_part),
                             "all_parts": str(all_parts),
-                            "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
+                            **make_visible_env_dict(gpu_names[i_part]),
                         }
                     )
                     os.environ.update(config)
@@ -1195,7 +1205,7 @@ def open1abc(
                         {
                             "i_part": str(i_part),
                             "all_parts": str(all_parts),
-                            "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
+                            **make_visible_env_dict(gpu_names[i_part]),
                         }
                     )
                     os.environ.update(config)
