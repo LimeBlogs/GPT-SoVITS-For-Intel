@@ -1,72 +1,99 @@
-import sys
-import pathlib
+import warnings
 
+warnings.filterwarnings("ignore")
+
+import os
+import pathlib
+import sys
+
+# ── R1：路径垫片（GPT_SoVITS/*.py → parents[1]）──
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from tools import amp_utils as amp  # noqa: E402
 from tools import device_utils as du  # noqa: E402
 
-import warnings
-
-warnings.filterwarnings("ignore")
-import os
-
-import utils
+import utils  # noqa: E402
 
 hps = utils.get_hparams(stage=2)
-os.environ["version"] = hps.model.version
-os.environ["CUDA_VISIBLE_DEVICES"] = hps.train.gpu_numbers.replace("-", ",")
-import logging
 
-import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.cuda.amp import GradScaler, autocast
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+# ── 设备可见性（原写法写死 CUDA_VISIBLE_DEVICES）──
+_BACKEND = du.backend_type()
+_GPU_NUMS = str(getattr(hps.train, "gpu_numbers", "0")).replace("-", ",")  # R2：HParams 没有 .get()
+if _BACKEND == "xpu":
+    os.environ["ZE_AFFINITY_MASK"] = _GPU_NUMS
+    os.environ.setdefault("ONEAPI_DEVICE_SELECTOR", f"level_zero:{_GPU_NUMS.split(',')[0]}")
+else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = _GPU_NUMS
+
+# 必须在 module.data_utils 被 import 之前设置（模块级读取）
+os.environ["version"] = hps.model.version
+
+import logging  # noqa: E402
+
+import torch  # noqa: E402
+import torch.distributed as dist  # noqa: E402
+import torch.multiprocessing as mp  # noqa: E402
+from torch.nn.parallel import DistributedDataParallel as DDP  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from torch.utils.tensorboard import SummaryWriter  # noqa: E402
+from tqdm import tqdm  # noqa: E402
 
 logging.getLogger("matplotlib").setLevel(logging.INFO)
 logging.getLogger("h5py").setLevel(logging.INFO)
 logging.getLogger("numba").setLevel(logging.INFO)
-from collections import OrderedDict as od
-from random import randint
+from collections import OrderedDict as od  # noqa: E402
+from random import randint  # noqa: E402
+from time import time as ttime  # noqa: E402
 
-from module import commons
-from module.data_utils import (
+from module import commons  # noqa: E402
+from module.data_utils import (  # noqa: E402
     DistributedBucketSampler,
     TextAudioSpeakerCollateV3,
-    TextAudioSpeakerLoaderV3,
     TextAudioSpeakerCollateV4,
+    TextAudioSpeakerLoaderV3,
     TextAudioSpeakerLoaderV4,
 )
-from module.models import (
+from module.models import (  # noqa: E402
     SynthesizerTrnV3 as SynthesizerTrn,
 )
-from peft import LoraConfig, get_peft_model
-from process_ckpt import savee
+from peft import LoraConfig, get_peft_model  # noqa: E402
+from process_ckpt import savee  # noqa: E402
 
-torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.deterministic = False
-###反正A100fp32更快，那试试tf32吧
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
+# ── 后端特性开关 ──
+if _BACKEND == "cuda":
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")  # 最低精度但最快（也就快一丁点），对于结果造成不了影响
 # from config import pretrained_s2G,pretrained_s2D
 global_step = 0
 
-device = "cpu"  # cuda以外的设备，等mps优化后加入
+device = str(du.default_device())
+# 本机：supports_bf16() 因 has_bfloat16_conversions=False 返回 False → "fp32"
+_PRECISION = "bf16" if (torch.device(device).type == "xpu" and du.supports_bf16(device)) else "fp32"
+_TORCH_DTYPE = torch.bfloat16 if _PRECISION == "bf16" else torch.float32
+
+
+def _dev(rank: int = 0) -> torch.device:
+    if du.accel_available(_BACKEND):
+        return torch.device(f"{_BACKEND}:{rank}")
+    return torch.device("cpu")
+
+
+def _pg_backend() -> str:
+    if _BACKEND == "xpu":
+        return "ccl"  # oneCCL，仅多卡；单卡不会走到
+    return "gloo" if os.name == "nt" else "nccl"
 
 
 def main():
-    if torch.cuda.is_available():
-        n_gpus = torch.cuda.device_count()
-    else:
-        n_gpus = 1
-    if n_gpus <= 1:
-        run(0, n_gpus, hps)
+    n_gpus = du.device_count(_BACKEND) if du.accel_available(_BACKEND) else 1
+    want_ddp = bool(getattr(hps.train, "ddp", False))  # R2：HParams 没有 .get()
+    if n_gpus <= 1 or not want_ddp:
+        run(0, 1, hps)
         return
 
     os.environ["MASTER_ADDR"] = "localhost"
@@ -83,11 +110,11 @@ def main():
 
 
 def run(rank, n_gpus, hps):
-    use_ddp = torch.cuda.is_available() and n_gpus > 1
+    use_ddp = du.accel_available(_BACKEND) and n_gpus > 1
     try:
         if use_ddp:
             dist.init_process_group(
-                backend="gloo" if os.name == "nt" else "nccl",
+                backend=_pg_backend(),
                 init_method="env://?use_libuv=False",
                 world_size=n_gpus,
                 rank=rank,
@@ -107,9 +134,9 @@ def _run(rank, n_gpus, hps, use_ddp):
         writer = SummaryWriter(log_dir=hps.s2_ckpt_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.s2_ckpt_dir, "eval"))
 
-    torch.manual_seed(hps.train.seed)
-    if torch.cuda.is_available():
-        torch.cuda.set_device(rank)
+    du.manual_seed_all(hps.train.seed)
+    if du.accel_available(_BACKEND):
+        du.set_device(rank, _BACKEND)
 
     TextAudioSpeakerLoader = TextAudioSpeakerLoaderV3 if hps.model.version == "v3" else TextAudioSpeakerLoaderV4
     TextAudioSpeakerCollate = TextAudioSpeakerCollateV3 if hps.model.version == "v3" else TextAudioSpeakerCollateV4
@@ -142,11 +169,11 @@ def _run(rank, n_gpus, hps, use_ddp):
         shuffle=True,
     )
     collate_fn = TextAudioSpeakerCollate()
-    worker_count = 4
+    worker_count = 0 if os.name == "nt" else 4  # R3：Windows 的 spawn worker 会重新 import 本模块
     loader_kwargs = dict(
         num_workers=worker_count,
         shuffle=False,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=du.accel_available(_BACKEND),  # F9：原写法 torch.cuda.is_available()
         collate_fn=collate_fn,
         batch_sampler=train_sampler,
     )
@@ -183,19 +210,20 @@ def _run(rank, n_gpus, hps, use_ddp):
             eps=hps.train.eps,
         )
 
-    def model2cuda(net_g, rank):
-        if torch.cuda.is_available():
-            net_g = net_g.cuda(rank)
-            if use_ddp:
-                net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
-        else:
-            net_g = net_g.to(device)
+    def model2dev(net_g, rank):
+        # 顺序不能错：先搬设备，再注入 LoRA（1f）
+        net_g = net_g.to(_dev(rank))
+        net_g.cfm = get_peft_model(net_g.cfm, lora_config)
+        # fp32 下不需要额外的 .to(dtype)；保留分支以便将来启用 bf16
+        if _PRECISION == "bf16":
+            net_g = net_g.to(_TORCH_DTYPE)
+        if use_ddp:
+            net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
         return net_g
 
     try:  # 如果能加载自动resume
         net_g = get_model(hps)
-        net_g.cfm = get_peft_model(net_g.cfm, lora_config)
-        net_g = model2cuda(net_g, rank)
+        net_g = model2dev(net_g, rank)
         optim_g = get_optim(net_g)
         # _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g,load_opt=0)
         _, _, _, epoch_str = utils.load_checkpoint(
@@ -224,8 +252,7 @@ def _run(rank, n_gpus, hps, use_ddp):
                     strict=False,
                 ),
             )
-        net_g.cfm = get_peft_model(net_g.cfm, lora_config)
-        net_g = model2cuda(net_g, rank)
+        net_g = model2dev(net_g, rank)
         optim_g = get_optim(net_g)
 
     no_grad_names = set()
@@ -240,7 +267,7 @@ def _run(rank, n_gpus, hps, use_ddp):
     for _ in range(epoch_str):
         scheduler_g.step()
 
-    scaler = GradScaler(enabled=hps.train.fp16_run)
+    scaler = amp.make_scaler(device, hps.train.fp16_run and _PRECISION != "bf16")
 
     net_d = optim_d = scheduler_d = None
     print("start training from epoch %s" % epoch_str)
@@ -288,41 +315,21 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     global global_step
 
     net_g.train()
+    t_last = ttime()
     for batch_idx, (ssl, spec, mel, ssl_lengths, spec_lengths, text, text_lengths, mel_lengths) in enumerate(
         tqdm(train_loader)
     ):
-        if torch.cuda.is_available():
-            spec, spec_lengths = (
-                spec.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                spec_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-            )
-            mel, mel_lengths = mel.cuda(rank, non_blocking=True), mel_lengths.cuda(rank, non_blocking=True)
-            ssl = ssl.cuda(rank, non_blocking=True)
-            ssl.requires_grad = False
-            text, text_lengths = (
-                text.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                text_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-            )
-        else:
-            spec, spec_lengths = spec.to(device), spec_lengths.to(device)
-            mel, mel_lengths = mel.to(device), mel_lengths.to(device)
-            ssl = ssl.to(device)
-            ssl.requires_grad = False
-            text, text_lengths = text.to(device), text_lengths.to(device)
+        _t = _dev(rank)
+        spec = spec.to(_t, non_blocking=True)
+        spec_lengths = spec_lengths.to(_t, non_blocking=True)
+        mel = mel.to(_t, non_blocking=True)
+        mel_lengths = mel_lengths.to(_t, non_blocking=True)
+        ssl = ssl.to(_t, non_blocking=True)
+        ssl.requires_grad = False
+        text = text.to(_t, non_blocking=True)
+        text_lengths = text_lengths.to(_t, non_blocking=True)
 
-        with autocast(enabled=hps.train.fp16_run):
+        with amp.autocast_ctx(device, hps.train.fp16_run and _PRECISION != "bf16", _TORCH_DTYPE):
             cfm_loss = net_g(
                 ssl,
                 spec,
@@ -357,6 +364,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 )
 
         global_step += 1
+        if rank == 0 and global_step % 20 == 0:
+            # 每 20 step 同步一次，取平均单步耗时 + 显存
+            du.synchronize(device)
+            now = ttime()
+            ms_per_step = (now - t_last) * 1000.0 / 20.0
+            t_last = now
+            print(f"[perf] step {global_step}  {ms_per_step:.1f} ms/step  {du.memory_report(device, 's2')}")
     if epoch % hps.train.save_every_epoch == 0 and rank == 0:
         if hps.train.if_save_latest == 0:
             utils.save_checkpoint(
