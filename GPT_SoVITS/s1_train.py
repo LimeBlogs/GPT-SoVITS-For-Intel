@@ -7,6 +7,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from tools import device_utils as du  # noqa: E402
+from tools import lightning_xpu as lx  # noqa: E402
 
 import os
 
@@ -40,6 +41,26 @@ from collections import OrderedDict
 
 from AR.utils import get_newest_ckpt
 from process_ckpt import my_save
+
+from pytorch_lightning import Callback
+
+
+# Windows 控制台 / 重定向输出用 GBK 时，rich 进度条 teardown 会抛 UnicodeEncodeError
+_PROGRESS_BAR = bool(sys.stdout.isatty()) and (sys.stdout.encoding or "").lower() not in {
+    "gbk",
+    "cp936",
+    "mbcs",
+}
+
+
+class _MemReport(Callback):
+    """每个 epoch 打印一行显存（验收 D4/D5 用）。"""
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        try:
+            print(f"[perf] s1 epoch {trainer.current_epoch + 1}  {du.memory_report(du.default_device(), 's1')}")
+        except Exception:
+            pass
 
 
 class my_model_ckpt(ModelCheckpoint):
@@ -130,18 +151,34 @@ def main(args):
     os.environ["USE_LIBUV"] = "0"
 
     _HAS_ACCEL = du.accel_available(_BACKEND)
+    # pytorch-lightning 2.6.6 只注册了 cpu / cuda / mps / xla，没有 XPU accelerator，
+    # 直接 accelerator="gpu" 会抛 MisconfigurationException("No supported gpu backend found!")。
+    # 退路顺序：gpu → 官方 XPU accelerator（若该版本有）→ 本仓库 tools/lightning_xpu.py 垫片 → cpu
+    _LIGHTNING_HAS_XPU = lx.lightning_has_xpu()
+    _TRAINER_ACCEL_KWARGS: dict = {}
+    if _HAS_ACCEL and _BACKEND == "cuda":
+        _ACCEL = "gpu"
+    elif _HAS_ACCEL and _BACKEND == "xpu" and _LIGHTNING_HAS_XPU:
+        _ACCEL = "gpu"
+    elif _HAS_ACCEL and _BACKEND == "xpu" and lx.xpu_available():
+        _ACCEL = "xpu(custom)"
+        _TRAINER_ACCEL_KWARGS = lx.single_device_kwargs(0)
+        print("info: Lightning 无官方 XPU accelerator，使用 tools/lightning_xpu.py 垫片（xpu:0）")
+    else:
+        _ACCEL = "cpu"
+        if _HAS_ACCEL:
+            print(f"warning: Lightning 不支持 {_BACKEND} accelerator，s1 训练退回 CPU。")
     # config 来自 yaml.full_load → 普通 dict，.get() 可用（与 hps 不同）
-    _MULTI = _HAS_ACCEL and du.device_count(_BACKEND) > 1 and bool(config["train"].get("ddp", False))
+    _MULTI = _ACCEL == "gpu" and du.device_count(_BACKEND) > 1 and bool(config["train"].get("ddp", False))
     # 本机走 fp32：XPU 恒用 32-true（没启用 XMX，bf16 无收益）
     _precision = "32-true" if _BACKEND == "xpu" else config["train"]["precision"]
 
-    trainer: Trainer = Trainer(
-        max_epochs=config["train"]["epochs"],
-        accelerator="gpu" if _HAS_ACCEL else "cpu",
+    _trainer_kwargs = dict(
+        accelerator=_ACCEL,
         # val_check_interval=9999999999999999999999,###不要验证
         # check_val_every_n_epoch=None,
         limit_val_batches=0,
-        devices=(du.device_count(_BACKEND) if _MULTI else 1) if _HAS_ACCEL else 1,
+        devices=(du.device_count(_BACKEND) if _MULTI else 1) if _ACCEL == "gpu" else 1,
         benchmark=False,
         fast_dev_run=False,
         strategy=(
@@ -153,11 +190,19 @@ def main(args):
             if _MULTI
             else "auto"
         ),
+        # Windows 控制台/重定向输出是 GBK 时，rich 进度条会在 teardown 抛 UnicodeEncodeError
+        enable_progress_bar=_PROGRESS_BAR,
+    )
+    _trainer_kwargs.update(_TRAINER_ACCEL_KWARGS)
+
+    trainer: Trainer = Trainer(
+        max_epochs=config["train"]["epochs"],
         precision=_precision,
         logger=logger,
         num_sanity_val_steps=0,
-        callbacks=[ckpt_callback],
+        callbacks=[ckpt_callback, _MemReport()],
         use_distributed_sampler=False,  # 非常简单的修改，但解决了采用自定义的 bucket_sampler 下训练步数不一致的问题！
+        **_trainer_kwargs,
     )
 
     model: Text2SemanticLightningModule = Text2SemanticLightningModule(config, output_dir)
