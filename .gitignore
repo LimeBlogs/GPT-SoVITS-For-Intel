@@ -21,6 +21,7 @@ speakers.json
 ref_audios
 tools/AP_BWE_main/24kto48k/*
 !tools/AP_BWE_main/24kto48k/readme.txt
+h2intelize/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -197,6 +198,6 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# ±¾µØµ÷ÊÔ²úÎï
+# ï¿½ï¿½ï¿½Øµï¿½ï¿½Ô²ï¿½ï¿½ï¿½
 out.wav
 *.log
