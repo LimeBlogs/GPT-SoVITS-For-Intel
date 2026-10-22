@@ -10,8 +10,15 @@ from tools import device_utils as du  # noqa: E402
 
 import os
 
+_BACKEND = du.backend_type()
+
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
-    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
+    _ids = os.environ["_CUDA_VISIBLE_DEVICES"]
+    if _BACKEND == "xpu":
+        os.environ["ZE_AFFINITY_MASK"] = _ids
+        os.environ.setdefault("ONEAPI_DEVICE_SELECTOR", f"level_zero:{_ids.split(',')[0]}")
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = _ids
 import argparse
 import logging
 import platform
@@ -94,6 +101,10 @@ class my_model_ckpt(ModelCheckpoint):
 def main(args):
     config = load_yaml_config(args.config_file)
 
+    # 音素符号表（symbols / symbols2）由 AR/data/dataset.py 在运行时读 os.environ["version"] 决定
+    os.environ["version"] = str(config.get("version") or os.environ.get("version") or "v2")
+    os.environ.setdefault("hz", "25hz")
+
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -117,19 +128,32 @@ def main(args):
     logger = TensorBoardLogger(name=output_dir.stem, save_dir=output_dir)
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["USE_LIBUV"] = "0"
+
+    _HAS_ACCEL = du.accel_available(_BACKEND)
+    # config 来自 yaml.full_load → 普通 dict，.get() 可用（与 hps 不同）
+    _MULTI = _HAS_ACCEL and du.device_count(_BACKEND) > 1 and bool(config["train"].get("ddp", False))
+    # 本机走 fp32：XPU 恒用 32-true（没启用 XMX，bf16 无收益）
+    _precision = "32-true" if _BACKEND == "xpu" else config["train"]["precision"]
+
     trainer: Trainer = Trainer(
         max_epochs=config["train"]["epochs"],
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        accelerator="gpu" if _HAS_ACCEL else "cpu",
         # val_check_interval=9999999999999999999999,###不要验证
         # check_val_every_n_epoch=None,
         limit_val_batches=0,
-        devices=-1 if torch.cuda.is_available() else 1,
+        devices=(du.device_count(_BACKEND) if _MULTI else 1) if _HAS_ACCEL else 1,
         benchmark=False,
         fast_dev_run=False,
-        strategy=DDPStrategy(process_group_backend="nccl" if platform.system() != "Windows" else "gloo")
-        if torch.cuda.is_available()
-        else "auto",
-        precision=config["train"]["precision"],
+        strategy=(
+            DDPStrategy(
+                process_group_backend=(
+                    "ccl" if _BACKEND == "xpu" else ("gloo" if platform.system() == "Windows" else "nccl")
+                )
+            )
+            if _MULTI
+            else "auto"
+        ),
+        precision=_precision,
         logger=logger,
         num_sanity_val_steps=0,
         callbacks=[ckpt_callback],

@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader
 from AR.data.bucket_sampler import DistributedBucketSampler
 from AR.data.dataset import Text2SemanticDataset
 
+import os  # noqa: E402
+
 
 class Text2SemanticDataModule(LightningDataModule):
     def __init__(
@@ -50,25 +52,35 @@ class Text2SemanticDataModule(LightningDataModule):
         )
         batch_size = max(min(batch_size, len(self._train_dataset) // 4), 1)  # 防止不保存
         sampler = DistributedBucketSampler(self._train_dataset, batch_size=batch_size)
+        # R3：Windows 上 DataLoader worker 用 spawn 启动，会重新 import 主模块 → 必须 0
+        num_workers = 0 if os.name == "nt" else self.num_workers
+        kwargs = {}
+        if num_workers > 0:
+            kwargs["persistent_workers"] = True
+            kwargs["prefetch_factor"] = 16
         return DataLoader(
             self._train_dataset,
             batch_size=batch_size,
             sampler=sampler,
             collate_fn=self._train_dataset.collate,
-            num_workers=self.num_workers,
-            persistent_workers=True,
-            prefetch_factor=16,
+            num_workers=num_workers,
+            **kwargs,
         )
 
     def val_dataloader(self):
+        # 验证集用 1（0 在某些 Lightning 版本会警告），其余平台沿用 max(.,12)
+        num_workers = max(self.num_workers, 1) if os.name == "nt" else max(self.num_workers, 12)
+        kwargs = {}
+        if num_workers > 0:
+            kwargs["persistent_workers"] = True
+            kwargs["prefetch_factor"] = 16
         return DataLoader(
             self._dev_dataset,
             batch_size=1,
             shuffle=False,
             collate_fn=self._train_dataset.collate,
-            num_workers=max(self.num_workers, 12),
-            persistent_workers=True,
-            prefetch_factor=16,
+            num_workers=num_workers,
+            **kwargs,
         )
 
     # 这个会使用到嘛？

@@ -5,6 +5,7 @@ train:
   save_every_n_epoch: 1
   precision: 16-mixed
   gradient_clip: 1.0
+  ddp: false
 optimizer:
   lr: 0.01
   lr_init: 0.00001
@@ -14,7 +15,7 @@ optimizer:
 data:
   max_eval_sample: 8
   max_sec: 54
-  num_workers: 4
+  num_workers: 0
   pad_val: 1024 # same with EOS in model
 model:
   vocab_size: 1025

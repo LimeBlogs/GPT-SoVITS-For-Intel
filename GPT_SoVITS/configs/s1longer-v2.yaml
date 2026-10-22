@@ -1,10 +1,16 @@
 train:
   seed: 1234
   epochs: 20
-  batch_size: 8
+  batch_size: 4
   save_every_n_epoch: 1
   precision: 16-mixed
   gradient_clip: 1.0
+  ddp: false
+  if_save_latest: true
+  if_save_every_weights: true
+  if_dpo: false
+  half_weights_save_dir: GPT_weights_v2
+  exp_name: xpu_smoke_s1
 optimizer:
   lr: 0.01
   lr_init: 0.00001
@@ -14,7 +20,7 @@ optimizer:
 data:
   max_eval_sample: 8
   max_sec: 54
-  num_workers: 4
+  num_workers: 0
   pad_val: 1024 # same with EOS in model
 model:
   vocab_size: 1025
@@ -29,3 +35,9 @@ model:
   random_bert: 0
 inference:
   top_k: 15
+# 以下键平时由 webui.py 的 open1Bb 注入；写在这里是为了让本文件可以单独命令行跑
+version: v2
+pretrained_s1: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
+output_dir: logs/xpu_smoke_s1
+train_semantic_path: logs/xpu_smoke_s1/6-name2semantic.tsv
+train_phoneme_path: logs/xpu_smoke_s1/2-name2text.txt
