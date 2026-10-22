@@ -71,7 +71,9 @@ if _BACKEND == "cuda":
 torch.set_float32_matmul_precision("medium")  # 最低精度但最快（也就快一丁点），对于结果造成不了影响
 # from config import pretrained_s2G,pretrained_s2D
 global_step = 0
-
+# 断点目录（webui.py 会提前建好；命令行直跑时由 _run 负责创建）
+save_dir = None
+_PERF = {"t": None, "n": 0}
 device = str(du.default_device())
 # 本机：supports_bf16() 因 has_bfloat16_conversions=False 返回 False → "fp32"
 _PRECISION = "bf16" if (torch.device(device).type == "xpu" and du.supports_bf16(device)) else "fp32"
@@ -127,7 +129,7 @@ def run(rank, n_gpus, hps):
 
 
 def _run(rank, n_gpus, hps, use_ddp):
-    global global_step
+    global global_step, save_dir
     if rank == 0:
         logger = utils.get_logger(hps.data.exp_dir)
         logger.info(hps)
@@ -183,6 +185,9 @@ def _run(rank, n_gpus, hps, use_ddp):
         train_dataset,
         **loader_kwargs,
     )
+    # 命令行直跑（不经 webui.py）时这个目录没人建，不建的话 my_save 会 WinError 3
+    save_dir = "%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version)
+    os.makedirs(save_dir, exist_ok=True)
     # if rank == 0:
     #     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data, val=True)
     #     eval_loader = DataLoader(eval_dataset, num_workers=0, shuffle=False,
@@ -246,7 +251,7 @@ def _run(rank, n_gpus, hps, use_ddp):
 
     try:  # 如果能加载自动resume
         _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path("%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version), "D_*.pth"),
+            utils.latest_checkpoint_path(save_dir, "D_*.pth"),
             net_d,
             optim_d,
         )  # D多半加载没事
@@ -254,7 +259,7 @@ def _run(rank, n_gpus, hps, use_ddp):
             logger.info("loaded D")
         # _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g,load_opt=0)
         _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path("%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version), "G_*.pth"),
+            utils.latest_checkpoint_path(save_dir, "G_*.pth"),
             net_g,
             optim_g,
         )
@@ -363,7 +368,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     net_g.train()
     net_d.train()
-    t_last = ttime()
+    if _PERF["t"] is None:
+        _PERF["t"] = ttime()
     for batch_idx, data in enumerate(tqdm(train_loader)):
         if hps.model.version in {"v2Pro", "v2ProPlus"}:
             ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths, sv_emb = data
@@ -514,13 +520,18 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                         scalars=scalar_dict,
                     )
         global_step += 1
-        if rank == 0 and global_step % 20 == 0:
-            # 每 20 step 同步一次，取平均单步耗时 + 显存（D4 验收看这行）
-            du.synchronize(device)
-            now = ttime()
-            ms_per_step = (now - t_last) * 1000.0 / 20.0
-            t_last = now
-            print(f"[perf] step {global_step}  {ms_per_step:.1f} ms/step  {du.memory_report(device, 's2')}")
+        if rank == 0:
+            _PERF["n"] += 1
+            if global_step % 20 == 0:
+                # 每 20 step 同步一次，取平均单步耗时 + 显存（D4 验收看这行）
+                du.synchronize(device)
+                now = ttime()
+                if _PERF["t"] is None:
+                    _PERF["t"] = now
+                ms_per_step = (now - _PERF["t"]) * 1000.0 / max(_PERF["n"], 1)
+                _PERF["t"] = now
+                _PERF["n"] = 0
+                print(f"[perf] step {global_step}  {ms_per_step:.1f} ms/step  {du.memory_report(device, 's2')}")
     if epoch % hps.train.save_every_epoch == 0 and rank == 0:
         if hps.train.if_save_latest == 0:
             utils.save_checkpoint(
@@ -529,7 +540,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 hps.train.learning_rate,
                 epoch,
                 os.path.join(
-                    "%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version),
+                    save_dir,
                     "G_{}.pth".format(global_step),
                 ),
             )
@@ -539,7 +550,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 hps.train.learning_rate,
                 epoch,
                 os.path.join(
-                    "%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version),
+                    save_dir,
                     "D_{}.pth".format(global_step),
                 ),
             )
@@ -550,7 +561,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 hps.train.learning_rate,
                 epoch,
                 os.path.join(
-                    "%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version),
+                    save_dir,
                     "G_{}.pth".format(233333333333),
                 ),
             )
@@ -560,7 +571,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 hps.train.learning_rate,
                 epoch,
                 os.path.join(
-                    "%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version),
+                    save_dir,
                     "D_{}.pth".format(233333333333),
                 ),
             )

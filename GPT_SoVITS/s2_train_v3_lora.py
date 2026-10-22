@@ -70,6 +70,8 @@ if _BACKEND == "cuda":
 torch.set_float32_matmul_precision("medium")  # 最低精度但最快（也就快一丁点），对于结果造成不了影响
 # from config import pretrained_s2G,pretrained_s2D
 global_step = 0
+# 每 20 step 的平均单步耗时统计（跨 epoch 累积，不能放在 train_and_evaluate 里重置）
+_PERF = {"t": None, "n": 0}
 
 device = str(du.default_device())
 # 本机：supports_bf16() 因 has_bfloat16_conversions=False 返回 False → "fp32"
@@ -315,7 +317,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     global global_step
 
     net_g.train()
-    t_last = ttime()
+    if _PERF["t"] is None:
+        _PERF["t"] = ttime()
     for batch_idx, (ssl, spec, mel, ssl_lengths, spec_lengths, text, text_lengths, mel_lengths) in enumerate(
         tqdm(train_loader)
     ):
@@ -364,13 +367,18 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 )
 
         global_step += 1
-        if rank == 0 and global_step % 20 == 0:
-            # 每 20 step 同步一次，取平均单步耗时 + 显存
-            du.synchronize(device)
-            now = ttime()
-            ms_per_step = (now - t_last) * 1000.0 / 20.0
-            t_last = now
-            print(f"[perf] step {global_step}  {ms_per_step:.1f} ms/step  {du.memory_report(device, 's2')}")
+        if rank == 0:
+            _PERF["n"] += 1
+            if global_step % 20 == 0:
+                # 每 20 step 同步一次，取平均单步耗时 + 显存（D4 验收看这行）
+                du.synchronize(device)
+                now = ttime()
+                if _PERF["t"] is None:
+                    _PERF["t"] = now
+                ms_per_step = (now - _PERF["t"]) * 1000.0 / max(_PERF["n"], 1)
+                _PERF["t"] = now
+                _PERF["n"] = 0
+                print(f"[perf] step {global_step}  {ms_per_step:.1f} ms/step  {du.memory_report(device, 's2')}")
     if epoch % hps.train.save_every_epoch == 0 and rank == 0:
         if hps.train.if_save_latest == 0:
             utils.save_checkpoint(
