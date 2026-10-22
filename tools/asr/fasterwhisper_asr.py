@@ -105,8 +105,14 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
     if language == "auto":
         language = None  # 不设置语种由模型自动输出概率最高的语种
     print("loading faster whisper model:", model_path, model_path)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = WhisperModel(model_path, device=device, compute_type=precision)
+    from tools import device_utils as du
+    dev_type = torch.device(du.default_device()).type
+    if dev_type == "cuda":
+        device, ctype = "cuda", precision
+    else:
+        device, ctype = "cpu", "int8"        # ctranslate2 无 Intel GPU 后端
+    print(f"faster-whisper: device={device}, compute_type={ctype}")
+    model = WhisperModel(model_path, device=device, compute_type=ctype)
 
     input_file_names = os.listdir(input_folder)
     input_file_names.sort()

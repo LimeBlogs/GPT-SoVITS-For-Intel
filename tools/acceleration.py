@@ -14,14 +14,21 @@ _logger = logging.getLogger(__name__)
 _DLL_HANDLES = []
 
 
-def _cuda_available(device):
-    return device.type == "cuda" and torch.cuda.is_available() and torch.version.cuda is not None
+def _accel_available(device):
+    device = torch.device(device)
+    if device.type == "cuda":
+        return torch.cuda.is_available() and torch.version.cuda is not None
+    if device.type == "xpu":
+        return hasattr(torch, "xpu") and torch.xpu.is_available()
+    return False
 
 
 def cuda_graph_available(device):
     device = torch.device(device)
+    if device.type == "xpu":
+        return False
     return bool(
-        _cuda_available(device)
+        _accel_available(device)
         and os.environ.get("CUDAGraph", "1") != "0"
         and callable(getattr(torch.cuda, "CUDAGraph", None))
         and callable(getattr(torch.cuda, "graph", None))
@@ -49,7 +56,11 @@ def _flash_attention_module():
 
 def flash_attention_available(device, dtype):
     device = torch.device(device)
-    if not _cuda_available(device) or dtype not in (torch.float16, torch.bfloat16):
+    if not _accel_available(device):
+        return False
+    if dtype not in (torch.float16, torch.bfloat16):
+        return False
+    if device.type == "xpu":
         return False
     if torch.cuda.get_device_capability(device)[0] < 8:
         return False
@@ -58,11 +69,16 @@ def flash_attention_available(device, dtype):
 
 
 def resolve_acceleration(device, dtype, use_cuda_graph=True, use_flash_attention=True):
+    device = torch.device(device)
     graph = bool(use_cuda_graph and cuda_graph_available(device))
     if use_flash_attention and flash_attention_available(device, dtype):
-        return "flash_attn_varlen_cuda_graph", graph
+        backend = "sdpa_flash_xpu" if device.type == "xpu" else "flash_attn_varlen_cuda_graph"
+        return backend, graph
     if graph:
-        return "torch_static_cuda_graph", True
+        backend = "xpu_static_graph" if device.type == "xpu" else "torch_static_cuda_graph"
+        return backend, True
+    if device.type == "xpu":
+        return "sdpa_varlen_xpu", False
     return None, False
 
 

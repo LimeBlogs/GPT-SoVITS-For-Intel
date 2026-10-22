@@ -3,9 +3,18 @@
 
 import json
 import os
+import pathlib
+import sys
 import warnings
 import zipfile
 from typing import Any, Dict, List, Tuple
+
+# GPT_SoVITS/text/g2pw/onnx_api.py → 向上 3 层到仓库根
+_ROOT = pathlib.Path(__file__).resolve().parents[3]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tools.ort_providers import select_providers_for_g2pw
 
 import numpy as np
 import onnxruntime
@@ -19,10 +28,11 @@ from .dataset import get_char_phoneme_labels, get_phoneme_labels, prepare_onnx_i
 from .utils import load_config
 
 onnxruntime.set_default_logger_severity(3)
-try:
-    onnxruntime.preload_dlls()
-except Exception:
-    pass
+if hasattr(onnxruntime, "preload_dlls"):
+    try:
+        onnxruntime.preload_dlls()
+    except Exception:
+        pass
 warnings.filterwarnings("ignore")
 
 model_version = "1.1"
@@ -340,18 +350,13 @@ class G2PWOnnxConverter(_G2PWBaseOnnxConverter):
             os.path.join(self.model_dir, "g2pw.onnx"),
         )
 
-        if "CUDAExecutionProvider" in onnxruntime.get_available_providers():
-            self.session_g2pw = onnxruntime.InferenceSession(
-                onnx_path,
-                sess_options=sess_options,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-            )
-        else:
-            self.session_g2pw = onnxruntime.InferenceSession(
-                onnx_path,
-                sess_options=sess_options,
-                providers=["CPUExecutionProvider"],
-            )
+        providers, provider_options = select_providers_for_g2pw()
+        self.session_g2pw = onnxruntime.InferenceSession(
+            onnx_path,
+            sess_options=sess_options,
+            providers=providers,
+            provider_options=provider_options,
+        )
 
     def _predict(self, model_input: Dict[str, Any]) -> Tuple[List[str], List[float]]:
         return predict(session=self.session_g2pw, onnx_input=model_input, labels=self.labels)

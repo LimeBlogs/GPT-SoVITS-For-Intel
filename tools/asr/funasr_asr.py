@@ -55,7 +55,10 @@ def create_model(language="zh", **kwargs):
     # For non-classic backends, route to multilingual models regardless of language
     if backend in ("fun-asr-nano", "sensevoice") and language != "yue":
         import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        from tools import device_utils as du
+        _dev = du.default_device()
+        # FunASR 内部可能有 .cuda() 硬编码，XPU/MPS 只能退 CPU
+        device = "cuda" if _dev.type == "cuda" else "cpu"
         cache_key = f"{language}_{backend}"
         if cache_key in funasr_models:
             return funasr_models[cache_key]

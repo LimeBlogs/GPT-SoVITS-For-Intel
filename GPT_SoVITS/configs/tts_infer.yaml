@@ -3,9 +3,9 @@ custom:
   cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
   device: xpu
   is_half: false
-  t2s_weights_path: GPT_weights/elaina-e25.ckpt
-  version: v1
-  vits_weights_path: SoVITS_weights/elaina_e10_s490.pth
+  t2s_weights_path: GPT_SoVITS/pretrained_models/s1v3.ckpt
+  version: v2ProPlus
+  vits_weights_path: GPT_SoVITS/pretrained_models/v2Pro/s2Gv2ProPlus.pth
 v1:
   bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
   cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
