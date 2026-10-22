@@ -2,8 +2,10 @@ import sys
 import pathlib
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+# GPT_SoVITS 也要在路径里：本目录的脚本要 import text / feature_extractor / module / utils
+for _p in (str(_ROOT), str(_ROOT / "GPT_SoVITS")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from tools import device_utils as du  # noqa: E402
 
@@ -13,8 +15,14 @@ inp_text = os.environ.get("inp_text")
 exp_name = os.environ.get("exp_name")
 i_part = os.environ.get("i_part")
 all_parts = os.environ.get("all_parts")
+# 子进程显卡隔离：XPU 走 ZE_AFFINITY_MASK，CUDA 才用 CUDA_VISIBLE_DEVICES
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
-    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
+    _ids = os.environ["_CUDA_VISIBLE_DEVICES"]
+    if du.backend_type() == "xpu":
+        os.environ["ZE_AFFINITY_MASK"] = _ids
+        os.environ.setdefault("ONEAPI_DEVICE_SELECTOR", f"level_zero:{_ids.split(',')[0]}")
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = _ids
 opt_dir = os.environ.get("opt_dir")
 pretrained_s2G = os.environ.get("pretrained_s2G")
 s2config_path = os.environ.get("s2config_path")
