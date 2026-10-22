@@ -1,71 +1,100 @@
-import sys
-import pathlib
+import warnings
 
+warnings.filterwarnings("ignore")
+
+import os
+import pathlib
+import sys
+
+# ── R1：路径垫片（GPT_SoVITS/*.py → parents[1]）──
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from tools import amp_utils as amp  # noqa: E402
 from tools import device_utils as du  # noqa: E402
 
-import warnings
-
-warnings.filterwarnings("ignore")
-import os
-
-import utils
+import utils  # noqa: E402
 
 hps = utils.get_hparams(stage=2)
-os.environ["CUDA_VISIBLE_DEVICES"] = hps.train.gpu_numbers.replace("-", ",")
-import logging
 
-import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.cuda.amp import GradScaler, autocast
-from torch.nn import functional as F
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+# ── 设备可见性（原写法写死 CUDA_VISIBLE_DEVICES）──
+_BACKEND = du.backend_type()
+_GPU_NUMS = str(getattr(hps.train, "gpu_numbers", "0")).replace("-", ",")  # R2：HParams 没有 .get()
+if _BACKEND == "xpu":
+    os.environ["ZE_AFFINITY_MASK"] = _GPU_NUMS
+    os.environ.setdefault("ONEAPI_DEVICE_SELECTOR", f"level_zero:{_GPU_NUMS.split(',')[0]}")
+else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = _GPU_NUMS
+
+# 必须在 module.data_utils 被 import 之前设置（模块级读取）
+os.environ["version"] = hps.model.version
+
+import logging  # noqa: E402
+
+import torch  # noqa: E402
+import torch.distributed as dist  # noqa: E402
+import torch.multiprocessing as mp  # noqa: E402
+from torch.nn import functional as F  # noqa: E402
+from torch.nn.parallel import DistributedDataParallel as DDP  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from torch.utils.tensorboard import SummaryWriter  # noqa: E402
+from tqdm import tqdm  # noqa: E402
 
 logging.getLogger("matplotlib").setLevel(logging.INFO)
 logging.getLogger("h5py").setLevel(logging.INFO)
 logging.getLogger("numba").setLevel(logging.INFO)
-from random import randint
+from random import randint  # noqa: E402
+from time import time as ttime  # noqa: E402
 
-from module import commons
-from module.data_utils import (
+from module import commons  # noqa: E402
+from module.data_utils import (  # noqa: E402
     DistributedBucketSampler,
     TextAudioSpeakerCollate,
     TextAudioSpeakerLoader,
 )
-from module.losses import discriminator_loss, feature_loss, generator_loss, kl_loss
-from module.mel_processing import mel_spectrogram_torch, spec_to_mel_torch
-from module.models import (
+from module.losses import discriminator_loss, feature_loss, generator_loss, kl_loss  # noqa: E402
+from module.mel_processing import mel_spectrogram_torch, spec_to_mel_torch  # noqa: E402
+from module.models import (  # noqa: E402
     MultiPeriodDiscriminator,
     SynthesizerTrn,
 )
-from process_ckpt import savee
+from process_ckpt import savee  # noqa: E402
 
-torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.deterministic = False
-###反正A100fp32更快，那试试tf32吧
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
+# ── 后端特性开关 ──
+if _BACKEND == "cuda":
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = False
+    ###反正A100fp32更快，那试试tf32吧
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")  # 最低精度但最快（也就快一丁点），对于结果造成不了影响
 # from config import pretrained_s2G,pretrained_s2D
 global_step = 0
 
-device = "cpu"  # cuda以外的设备，等mps优化后加入
+device = str(du.default_device())
+# 本机：supports_bf16() 因 has_bfloat16_conversions=False 返回 False → "fp32"
+_PRECISION = "bf16" if (torch.device(device).type == "xpu" and du.supports_bf16(device)) else "fp32"
+_TORCH_DTYPE = torch.bfloat16 if _PRECISION == "bf16" else torch.float32
+
+
+def _dev(rank: int = 0) -> torch.device:
+    if du.accel_available(_BACKEND):
+        return torch.device(f"{_BACKEND}:{rank}")
+    return torch.device("cpu")
+
+
+def _pg_backend() -> str:
+    if _BACKEND == "xpu":
+        return "ccl"  # oneCCL，仅多卡；单卡不会走到
+    return "gloo" if os.name == "nt" else "nccl"
 
 
 def main():
-    if torch.cuda.is_available():
-        n_gpus = torch.cuda.device_count()
-    else:
-        n_gpus = 1
-    if n_gpus <= 1:
-        run(0, n_gpus, hps)
+    n_gpus = du.device_count(_BACKEND) if du.accel_available(_BACKEND) else 1
+    want_ddp = bool(getattr(hps.train, "ddp", False))  # R2：HParams 没有 .get()
+    if n_gpus <= 1 or not want_ddp:
+        run(0, 1, hps)
         return
 
     os.environ["MASTER_ADDR"] = "localhost"
@@ -82,11 +111,11 @@ def main():
 
 
 def run(rank, n_gpus, hps):
-    use_ddp = torch.cuda.is_available() and n_gpus > 1
+    use_ddp = du.accel_available(_BACKEND) and n_gpus > 1
     try:
         if use_ddp:
             dist.init_process_group(
-                backend="gloo" if os.name == "nt" else "nccl",
+                backend=_pg_backend(),
                 init_method="env://?use_libuv=False",
                 world_size=n_gpus,
                 rank=rank,
@@ -106,9 +135,9 @@ def _run(rank, n_gpus, hps, use_ddp):
         writer = SummaryWriter(log_dir=hps.s2_ckpt_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.s2_ckpt_dir, "eval"))
 
-    torch.manual_seed(hps.train.seed)
-    if torch.cuda.is_available():
-        torch.cuda.set_device(rank)
+    du.manual_seed_all(hps.train.seed)
+    if du.accel_available(_BACKEND):
+        du.set_device(rank, _BACKEND)
 
     train_dataset = TextAudioSpeakerLoader(hps.data, version=hps.model.version)
     train_sampler = DistributedBucketSampler(
@@ -139,15 +168,20 @@ def _run(rank, n_gpus, hps, use_ddp):
         shuffle=True,
     )
     collate_fn = TextAudioSpeakerCollate(version=hps.model.version)
-    train_loader = DataLoader(
-        train_dataset,
-        num_workers=4,
+    worker_count = 0 if os.name == "nt" else 4  # R3：Windows 的 spawn worker 会重新 import 本模块
+    loader_kwargs = dict(
+        num_workers=worker_count,
         shuffle=False,
-        pin_memory=True,
+        pin_memory=du.accel_available(_BACKEND),
         collate_fn=collate_fn,
         batch_sampler=train_sampler,
-        persistent_workers=True,
-        prefetch_factor=2,
+    )
+    if worker_count > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    train_loader = DataLoader(
+        train_dataset,
+        **loader_kwargs,
     )
     # if rank == 0:
     #     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data, val=True)
@@ -155,27 +189,14 @@ def _run(rank, n_gpus, hps, use_ddp):
     #                              batch_size=1, pin_memory=True,
     #                              drop_last=False, collate_fn=collate_fn)
 
-    net_g = (
-        SynthesizerTrn(
-            hps.data.filter_length // 2 + 1,
-            hps.train.segment_size // hps.data.hop_length,
-            n_speakers=hps.data.n_speakers,
-            **hps.model,
-        ).cuda(rank)
-        if torch.cuda.is_available()
-        else SynthesizerTrn(
-            hps.data.filter_length // 2 + 1,
-            hps.train.segment_size // hps.data.hop_length,
-            n_speakers=hps.data.n_speakers,
-            **hps.model,
-        ).to(device)
-    )
+    net_g = SynthesizerTrn(
+        hps.data.filter_length // 2 + 1,
+        hps.train.segment_size // hps.data.hop_length,
+        n_speakers=hps.data.n_speakers,
+        **hps.model,
+    ).to(_dev(rank))
 
-    net_d = (
-        MultiPeriodDiscriminator(hps.model.use_spectral_norm, version=hps.model.version).cuda(rank)
-        if torch.cuda.is_available()
-        else MultiPeriodDiscriminator(hps.model.use_spectral_norm, version=hps.model.version).to(device)
-    )
+    net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm, version=hps.model.version).to(_dev(rank))
     for name, param in net_g.named_parameters():
         if not param.requires_grad:
             print(name, "not requires_grad")
@@ -222,9 +243,6 @@ def _run(rank, n_gpus, hps, use_ddp):
     if use_ddp:
         net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
         net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
-    elif not torch.cuda.is_available():
-        net_g = net_g.to(device)
-        net_d = net_d.to(device)
 
     try:  # 如果能加载自动resume
         _, _, _, epoch_str = utils.load_checkpoint(
@@ -296,7 +314,7 @@ def _run(rank, n_gpus, hps, use_ddp):
         scheduler_g.step()
         scheduler_d.step()
 
-    scaler = GradScaler(enabled=hps.train.fp16_run)
+    scaler = amp.make_scaler(device, hps.train.fp16_run and _PRECISION != "bf16")
 
     print("start training from epoch %s" % epoch_str)
     for epoch in range(epoch_str, hps.train.epochs + 1):
@@ -345,57 +363,24 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     net_g.train()
     net_d.train()
+    t_last = ttime()
     for batch_idx, data in enumerate(tqdm(train_loader)):
         if hps.model.version in {"v2Pro", "v2ProPlus"}:
             ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths, sv_emb = data
         else:
             ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths = data
-        if torch.cuda.is_available():
-            spec, spec_lengths = (
-                spec.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                spec_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-            )
-            y, y_lengths = (
-                y.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                y_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-            )
-            ssl = ssl.cuda(rank, non_blocking=True)
-            ssl.requires_grad = False
-            # ssl_lengths = ssl_lengths.cuda(rank, non_blocking=True)
-            text, text_lengths = (
-                text.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-                text_lengths.cuda(
-                    rank,
-                    non_blocking=True,
-                ),
-            )
-            if hps.model.version in {"v2Pro", "v2ProPlus"}:
-                sv_emb = sv_emb.cuda(rank, non_blocking=True)
-        else:
-            spec, spec_lengths = spec.to(device), spec_lengths.to(device)
-            y, y_lengths = y.to(device), y_lengths.to(device)
-            ssl = ssl.to(device)
-            ssl.requires_grad = False
-            # ssl_lengths = ssl_lengths.cuda(rank, non_blocking=True)
-            text, text_lengths = text.to(device), text_lengths.to(device)
-            if hps.model.version in {"v2Pro", "v2ProPlus"}:
-                sv_emb = sv_emb.to(device)
-        with autocast(enabled=hps.train.fp16_run):
+        _t = _dev(rank)
+        spec = spec.to(_t, non_blocking=True)
+        spec_lengths = spec_lengths.to(_t, non_blocking=True)
+        y = y.to(_t, non_blocking=True)
+        y_lengths = y_lengths.to(_t, non_blocking=True)
+        ssl = ssl.to(_t, non_blocking=True)
+        ssl.requires_grad = False
+        text = text.to(_t, non_blocking=True)
+        text_lengths = text_lengths.to(_t, non_blocking=True)
+        if hps.model.version in {"v2Pro", "v2ProPlus"}:
+            sv_emb = sv_emb.to(_t, non_blocking=True)
+        with amp.autocast_ctx(device, hps.train.fp16_run and _PRECISION != "bf16", _TORCH_DTYPE):
             if hps.model.version in {"v2Pro", "v2ProPlus"}:
                 (y_hat, kl_ssl, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q), stats_ssl) = net_g(
                     ssl, spec, spec_lengths, text, text_lengths, sv_emb
@@ -433,9 +418,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
             y = commons.slice_segments(y, ids_slice * hps.data.hop_length, hps.train.segment_size)  # slice
 
-            # Discriminator
-            y_d_hat_r, y_d_hat_g, _, _ = net_d(y, y_hat.detach())
-            with autocast(enabled=False):
+            # Discriminator（fp32 下 .to() 是空操作；保留作为 dtype 保险，见 1j）
+            net_d_dtype = next(net_d.parameters()).dtype
+            y_d_hat_r, y_d_hat_g, _, _ = net_d(y.to(net_d_dtype), y_hat.detach().to(net_d_dtype))
+            with amp.autocast_ctx(device, False, force_fp32=True):
                 loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
                     y_d_hat_r,
                     y_d_hat_g,
@@ -447,10 +433,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
         scaler.step(optim_d)
 
-        with autocast(enabled=hps.train.fp16_run):
+        with amp.autocast_ctx(device, hps.train.fp16_run and _PRECISION != "bf16", _TORCH_DTYPE):
             # Generator
-            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
-            with autocast(enabled=False):
+            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y.to(net_d_dtype), y_hat.to(net_d_dtype))
+            with amp.autocast_ctx(device, False, force_fp32=True):
                 loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
                 loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
 
@@ -528,6 +514,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                         scalars=scalar_dict,
                     )
         global_step += 1
+        if rank == 0 and global_step % 20 == 0:
+            # 每 20 step 同步一次，取平均单步耗时 + 显存（D4 验收看这行）
+            du.synchronize(device)
+            now = ttime()
+            ms_per_step = (now - t_last) * 1000.0 / 20.0
+            t_last = now
+            print(f"[perf] step {global_step}  {ms_per_step:.1f} ms/step  {du.memory_report(device, 's2')}")
     if epoch % hps.train.save_every_epoch == 0 and rank == 0:
         if hps.train.if_save_latest == 0:
             utils.save_checkpoint(
@@ -614,16 +607,11 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             text_lengths,
         ) in enumerate(eval_loader):
             print(111)
-            if torch.cuda.is_available():
-                spec, spec_lengths = spec.cuda(), spec_lengths.cuda()
-                y, y_lengths = y.cuda(), y_lengths.cuda()
-                ssl = ssl.cuda()
-                text, text_lengths = text.cuda(), text_lengths.cuda()
-            else:
-                spec, spec_lengths = spec.to(device), spec_lengths.to(device)
-                y, y_lengths = y.to(device), y_lengths.to(device)
-                ssl = ssl.to(device)
-                text, text_lengths = text.to(device), text_lengths.to(device)
+            _t = _dev()
+            spec, spec_lengths = spec.to(_t), spec_lengths.to(_t)
+            y, y_lengths = y.to(_t), y_lengths.to(_t)
+            ssl = ssl.to(_t)
+            text, text_lengths = text.to(_t), text_lengths.to(_t)
             for test in [0, 1]:
                 y_hat, mask, *_ = generator_to_infer.infer(
                     ssl,
