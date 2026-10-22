@@ -78,12 +78,16 @@ if os.path.exists(semantic_path) == False:
 
     device = str(du.default_device())
     hps = utils.get_hparams_from_file(s2config_path)
+    # s2 配置里可能自带 model.version（WebUI 生成的 tmp_s2.json 就会写进去），
+    # 这里的 version 是按权重体积推断的，二者只能留一个，否则 TypeError: multiple values
+    model_cfg = dict(hps.model.items())
+    model_cfg.pop("version", None)
     vq_model = SynthesizerTrn(
         hps.data.filter_length // 2 + 1,
         hps.train.segment_size // hps.data.hop_length,
         n_speakers=hps.data.n_speakers,
         version=version,
-        **hps.model,
+        **model_cfg,
     )
     if is_half == True:
         vq_model = vq_model.half().to(device)
