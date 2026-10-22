@@ -74,6 +74,12 @@ python download_models.py
 
 ### 启动
 
+修复系统路径（一次即可）
+
+```bash
+python fix_sys_path.py
+```
+
 ```bash
 python webui.py
 ```
